@@ -1,0 +1,227 @@
+\documentclass[11pt,letterpaper,twocolumn]{article}
+
+% ── ACL-style formatting ─────────────────────────────────────────────────────
+\usepackage{times}
+\usepackage{microtype}
+\usepackage[margin=1in,columnsep=0.25in]{geometry}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{natbib}
+\usepackage{filecontents}
+\usepackage{authblk}
+\usepackage{caption}
+\usepackage{array}
+\usepackage{multirow}
+
+% ACL-style section headers
+\titleformat{\section}{\normalfont\bfseries}{\thesection}{0.5em}{}
+\titleformat{\subsection}{\normalfont\bfseries\itshape}{\thesubsection}{0.5em}{}
+\titlespacing{\section}{0pt}{6pt}{2pt}
+\titlespacing{\subsection}{0pt}{4pt}{1pt}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+\captionsetup{font=small}
+
+% ── Bib ───────────────────────────────────────────────────────────────────────
+\begin{filecontents}{refs_progress.bib}
+@inproceedings{chimani2022spanner,
+  author    = {Markus Chimani and Finn Stutzenstein},
+  title     = {Spanner Approximations in Practice},
+  booktitle = {30th Annual European Symposium on Algorithms ({ESA} 2022)},
+  series    = {{LIPIcs}},
+  volume    = {244},
+  pages     = {37:1--37:15},
+  year      = {2022},
+  doi       = {10.4230/LIPIcs.ESA.2022.37}
+}
+\end{filecontents}
+
+% ── Title ─────────────────────────────────────────────────────────────────────
+\title{\textbf{Graph Spanner Approximations in Practice:\\
+Interim Progress Report}}
+
+\author[1]{Sheikh Muhammad Muneeb \quad Abdul Moiz Ahmed \quad Moosa Owais}
+\affil[1]{Habib University, Karachi \quad
+\small\texttt{\{ms08914, aa08811, mo08952\}@st.habib.edu.pk}}
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+% ── Abstract ─────────────────────────────────────────────────────────────────
+\begin{abstract}
+We report interim progress on implementing and evaluating the Greedy
+$(2k{-}1)$-spanner algorithm from \citet{chimani2022spanner}.
+Our implementation produces spanners that satisfy the stretch
+guarantee on all tested instances.
+Across 5 graph sizes ($n \in \{10, 20, 50, 100, 200\}$),
+3 density levels, and 2 stretch parameters ($\alpha \in \{3, 5\}$),
+we observe that sparseness scales sub-linearly with $n$,
+effective stretch consistently stays below the theoretical bound,
+and runtime grows steeply with density for $\alpha=3$.
+Baswana--Sen implementation and full-scale benchmarking remain for
+the final week.
+\end{abstract}
+
+% ── 1. Problem ───────────────────────────────────────────────────────────────
+\section{Problem Statement}
+
+A \emph{multiplicative $\alpha$-spanner} $H$ of a weighted undirected
+graph $G=(V,E,w)$ is a sparse subgraph satisfying
+$d_H(u,v) \leq \alpha \cdot d_G(u,v)$ for all $u,v \in V$.
+The fundamental tension is between \emph{stretch} $\alpha$ and
+\emph{sparseness} $|E_H|/n$: a smaller $\alpha$ forces more edges into $H$,
+increasing both size and construction time.
+
+This problem is NP-hard to solve optimally.
+\citet{chimani2022spanner} provide the first systematic experimental
+comparison of polynomial-time approximation algorithms, evaluating five
+algorithms across 2,000+ graph instances.
+Our project implements and benchmarks the two most practical algorithms
+from that study: the \textbf{Greedy} algorithm (ADDJS) and the
+\textbf{Baswana--Sen} (BS) clustering algorithm.
+
+% ── 2. Algorithm ─────────────────────────────────────────────────────────────
+\section{Algorithm: Greedy Spanner}
+
+The Greedy $(2k{-}1)$-spanner processes edges of $G$ in non-decreasing
+weight order.
+Each edge $(u,v)$ is added to the spanner $H$ only if no path
+already exists in $H$ satisfying the stretch bound:
+
+\begin{equation}
+d_H(u,v) \;>\; (2k-1)\cdot w(u,v)
+\end{equation}
+
+Each membership test runs Dijkstra on the current (sparse, growing) $H$.
+The algorithm is guaranteed to produce a spanner of size
+$O(n^{1+1/k})$ with lightness $O(n/k)$.
+
+\paragraph{Implementation.}
+Our Python implementation uses NetworkX for graph primitives and
+Dijkstra shortest-path queries.
+Correctness is verified by checking $d_H(u,v) \leq \alpha \cdot d_G(u,v)$
+for all pairs (exact for $n \leq 150$, 500-sample estimate for larger).
+
+% ── 3. Preliminary Results ───────────────────────────────────────────────────
+\section{Preliminary Results}
+
+We ran the Greedy algorithm on 90 Erd\H{o}s--R\'enyi instances:
+$n \in \{10,20,50,100,200\}$, density $\in \{0.1, 0.3, 0.5\}$,
+3 graphs per combination, $k \in \{2,3\}$.
+Table~\ref{tab:results} reports means across the 3 repetitions.
+All effective-stretch values are at or below the theoretical bound
+$\alpha = 2k-1$, confirming correctness.
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{r r r r r r r}
+\toprule
+$n$ & dens & $\alpha$ & sparse & light & stretch & time(s) \\
+\midrule
+ 10 & 0.1 & 3 & 0.90 & 1.00 & 1.03 & 0.001 \\
+ 10 & 0.3 & 3 & 0.90 & 1.00 & 2.20 & 0.001 \\
+ 50 & 0.1 & 3 & 1.13 & 1.25 & 2.88 & 0.008 \\
+ 50 & 0.3 & 3 & 1.16 & 1.31 & \textbf{3.00} & 0.036 \\
+ 50 & 0.5 & 3 & 1.16 & 1.32 & \textbf{3.00} & 0.059 \\
+100 & 0.1 & 3 & 1.18 & 1.35 & 2.99 & 0.071 \\
+100 & 0.3 & 3 & 1.20 & 1.37 & \textbf{3.00} & 0.271 \\
+100 & 0.5 & 3 & 1.29 & 1.52 & \textbf{3.00} & 0.491 \\
+200 & 0.1 & 3 & 1.27 & 1.52 & 2.72 & 0.719 \\
+200 & 0.3 & 3 & 1.34 & 1.65 & 2.76 & 2.243 \\
+200 & 0.5 & 3 & 1.34 & 1.60 & 2.62 & 3.822 \\
+\midrule
+ 50 & 0.3 & 5 & 1.01 & 1.05 & 4.28 & 0.026 \\
+100 & 0.3 & 5 & 1.03 & 1.05 & 4.76 & 0.243 \\
+200 & 0.3 & 5 & 1.09 & 1.15 & 4.37 & 2.147 \\
+\bottomrule
+\end{tabular}
+\caption{Greedy results (mean over 3 runs). \textbf{Bold}: stretch tight at bound.}
+\label{tab:results}
+\end{table}
+
+\paragraph{Key observations.}
+
+\textbf{(1) Sparseness grows sub-linearly.}
+For $\alpha=3$, sparseness rises from 0.90 at $n=10$ to 1.34 at
+$n=200$, consistent with the $O(n^{1+1/k}) = O(n^{3/2})$ edge-count
+guarantee (in terms of edges-per-vertex the growth is slow).
+
+\textbf{(2) Higher stretch $\Rightarrow$ sparser spanners.}
+At $n=200$, density 0.3: $\alpha=3$ gives sparseness 1.34 vs.\
+$\alpha=5$ gives 1.09, a 19\% reduction in edges per vertex.
+
+\textbf{(3) Stretch bound is tight at medium-to-high density.}
+Several instances at density 0.3 and 0.5 achieve effective stretch
+exactly equal to $\alpha$, confirming our correctness oracle.
+
+\textbf{(4) Runtime grows sharply with density.}
+At $n=200$: density 0.1 takes 0.72\,s; density 0.5 takes 3.82\,s ---
+a $5.3\times$ increase driven by the quadratically larger edge set
+requiring Dijkstra per edge.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{/mnt/user-data/outputs/spanner_results/fig1_sparseness.png}
+\caption{Sparseness vs.\ $n$ for $\alpha=3$ (left) and $\alpha=5$ (right).
+Higher density yields higher sparseness; $\alpha=5$ is consistently sparser.}
+\label{fig:sparse}
+\end{figure}
+
+% ── 4. Challenges ────────────────────────────────────────────────────────────
+\section{Challenges Identified}
+
+\paragraph{Greedy scalability.}
+The Dijkstra-per-edge design is prohibitive for large dense graphs.
+At $n=200$, density 0.5, runtime is already 3.8\,s.
+Extrapolating to $n=2{,}000$ (the paper's largest Random instance)
+at moderate density would take hours.
+Mitigation: restrict Greedy benchmarks to $n \leq 500$ and
+sparse graphs ($\text{density} \leq 0.3$), matching the original
+paper's reported solve-rate limitations.
+
+\paragraph{Stretch oracle at scale.}
+All-pairs shortest-path verification is $O(n^2 \log n)$ and
+infeasible beyond $n \approx 500$.
+Our 500-pair sampling approximation introduces a small probability
+of underestimating the true maximum stretch.
+
+\paragraph{Baswana--Sen correctness.}
+BS involves multi-round cluster sampling with randomized cluster
+membership.
+The key correctness invariant (every vertex is either clustered
+or has added its inter-cluster edges) requires careful bookkeeping
+distinct from the Greedy case.
+
+% ── 5. Plan ──────────────────────────────────────────────────────────────────
+\section{Next Steps and Timeline}
+
+\paragraph{Week 13 (this week).}
+Implement Baswana--Sen algorithm.
+Run preliminary BS vs.\ Greedy comparison on Random instances
+($n \leq 500$) for $k \in \{2,3\}$.
+
+\paragraph{Week 14.}
+Extend experiments to TSPLIB (95 instances, $n$ up to 1,200 for
+Greedy; all for BS) and the SNAP Facebook/Gnutella graphs.
+Measure and compare: sparseness, lightness, effective stretch
+(sampled), peak memory, and runtime across all five metrics.
+
+\paragraph{Week 15.}
+Analyse results, produce final figures and tables replicating
+the structure of \citet{chimani2022spanner}, and prepare the
+final presentation.
+
+% ── References ───────────────────────────────────────────────────────────────
+\bibliographystyle{plainnat}
+\bibliography{refs_progress}
+
+\end{document}
