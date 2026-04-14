@@ -15,7 +15,7 @@ The current implementation is designed for algorithm experimentation and reprodu
 Install required packages:
 
 ```bash
-pip install networkx numpy matplotlib
+pip install networkx numpy matplotlib tsplib95
 ```
 
 ### Optional: Virtual Environment
@@ -28,7 +28,29 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install --upgrade pip
-pip install networkx numpy matplotlib
+pip install networkx numpy matplotlib tsplib95
+```
+
+## Dataset Loaders
+
+The repository includes three dataset loaders in [dataset_loaders.py](dataset_loaders.py):
+
+- `load_tsplib_complete_graphs(tsplib_dir)`: loads every `.tsp` file with `tsplib95`, skips directed instances, builds a complete weighted NetworkX graph using `problem.get_weight(i, j)` for all node pairs, and skips instances if any edge weight is 0.
+- `load_facebook_graph(path, seed=42)`: reads `facebook_combined.txt.gz` as an undirected edge list and assigns deterministic random integer weights in `[1, n]`.
+- `load_gnutella_graph(path, seed=42)`: reads `p2p-Gnutella08.txt.gz`, converts to undirected, keeps the largest connected component, and assigns deterministic random integer weights in `[1, n]`.
+
+Example:
+
+```python
+from dataset_loaders import (
+	load_facebook_graph,
+	load_gnutella_graph,
+	load_tsplib_complete_graphs,
+)
+
+tsplib_graphs = load_tsplib_complete_graphs("tsplib")
+facebook = load_facebook_graph("facebook_combined.txt.gz", seed=42)
+gnutella = load_gnutella_graph("p2p-Gnutella08.txt.gz", seed=42)
 ```
 
 ## Usage Instructions
