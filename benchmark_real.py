@@ -4,12 +4,9 @@ This script benchmarks:
 - TSPLIB: BS (multiple seeds) and Greedy (n <= GREEDY_N_CAP), k in {2, 3}
 - Facebook: BS only, k in {2, 3}
 - Gnutella: BS only, k in {2, 3}
+- Steinlib: BS and Greedy (n <= GREEDY_N_CAP), k in {2, 3}
 
 Results are written to results/benchmark_real.csv, and a grouped summary is printed.
-
-The benchmark finished successfully in fast-test mode and wrote benchmark_real.csv. TSPLIB loaded 111 files, 48 survived the zero-weight/ATSP filter, and the grouped family/algo/k summary was printed to the terminal.
-
-Completed the benchmark pipeline and wrote benchmark_real.csv. The run used the fast-test settings to finish in-session, and the terminal printed the grouped family/algo/k summary.
 """
 
 from __future__ import annotations
@@ -20,24 +17,61 @@ import random
 import time
 import tracemalloc
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeAlias, cast
 
 import networkx as nx
 import numpy as np
 import pandas as pd
-import tsplib95
+import tsplib95  # pyright: ignore[reportMissingTypeStubs]
+import dataset_loaders
 
-from bs_spanner import baswana_sen_spanner
-from dataset_loaders import load_facebook_graph, load_gnutella_graph
+from bs_spanner import baswana_sen_spanner  # pyright: ignore[reportUnknownVariableType]
+
+
+NodeId = int
+if TYPE_CHECKING:
+    GraphT: TypeAlias = nx.Graph[NodeId]
+else:
+    GraphT: TypeAlias = nx.Graph
+
+
+class TsplibProblem(Protocol):
+    type: str
+    dimension: int
+
+    def get_nodes(self) -> list[NodeId]: ...
+
+    def get_weight(self, start: NodeId, end: NodeId) -> float | int: ...
+
+
+class BSBuilder(Protocol):
+    def __call__(self, G: GraphT, k: int, seed: int | None = None) -> GraphT: ...
+
+
+class GraphLoader(Protocol):
+    def __call__(self, path: str | Path, seed: int = 42) -> GraphT: ...
+
+
+class GraphsLoader(Protocol):
+    def __call__(self, path: str | Path) -> dict[str, GraphT]: ...
+
+
+BS_SPANNER = cast(BSBuilder, baswana_sen_spanner)
+LOAD_FACEBOOK_GRAPH = cast(GraphLoader, dataset_loaders.load_facebook_graph)  # pyright: ignore[reportUnknownMemberType]
+LOAD_GNUTELLA_GRAPH = cast(GraphLoader, dataset_loaders.load_gnutella_graph)  # pyright: ignore[reportUnknownMemberType]
+LOAD_STEINLIB_GRAPHS = cast(GraphsLoader, dataset_loaders.load_steinlib_graphs)  # pyright: ignore[reportUnknownMemberType]
+TSPLIB_LOAD = cast(Callable[[Path], Any], tsplib95.load)  # pyright: ignore[reportUnknownMemberType]
 
 
 ROOT = Path(__file__).resolve().parent
 TSPLIB_DIR = ROOT / "tsplib"
 FACEBOOK_PATH = ROOT / "facebook_combined.txt" / "facebook_combined.txt"
 GNUTELLA_PATH = ROOT / "p2p-Gnutella08.txt" / "p2p-Gnutella08.txt"
+STEINLIB_DIR = ROOT / "steinlib"
 OUTPUT_DIR = ROOT / "results"
 OUTPUT_CSV = OUTPUT_DIR / "benchmark_real.csv"
 
+# Fast test-run config
 K_VALUES = [2, 3]
 BS_TRIALS = 3
 GREEDY_N_CAP = 200
@@ -47,8 +81,17 @@ STRETCH_SAMPLES = 50
 EXACT_THRESHOLD = 30
 LARGE_GRAPH_SAMPLES = 10
 
+# Production config
+# K_VALUES = [2, 3]
+# BS_TRIALS = 10
+# GREEDY_N_CAP = 1200
+# TSPLIB_BS_N_CAP = 1200
+# STRETCH_SAMPLES = 1000
+# EXACT_THRESHOLD = 30
+# LARGE_GRAPH_SAMPLES = 1000
+
 FIELDNAMES = [
-    "family",
+    "family"
     "instance",
     "n",
     "m",
@@ -68,14 +111,22 @@ FIELDNAMES = [
 ]
 
 
-def greedy_spanner(graph: nx.Graph, k: int) -> nx.Graph:
+def load_tsplib_problem(path: Path) -> TsplibProblem:
+    return cast(TsplibProblem, TSPLIB_LOAD(path))
+
+
+def greedy_spanner(graph: GraphT, k: int) -> GraphT:
     """Construct a weighted greedy (2k-1)-spanner."""
     alpha = 2 * k - 1
-    spanner = nx.Graph()
+    spanner: GraphT = cast(GraphT, nx.Graph())
     spanner.add_nodes_from(graph.nodes())
 
-    edges_sorted = sorted(graph.edges(data="weight"), key=lambda e: e[2])
-    for u, v, w in edges_sorted:
+    edges_sorted = sorted(
+        graph.edges(data=True),
+        key=lambda e: float(e[2].get("weight", 1.0)),
+    )
+    for u, v, data in edges_sorted:
+        w = float(data.get("weight", 1.0))
         try:
             d = nx.dijkstra_path_length(spanner, u, v, weight="weight")
         except nx.NetworkXNoPath:
@@ -87,13 +138,20 @@ def greedy_spanner(graph: nx.Graph, k: int) -> nx.Graph:
     return spanner
 
 
-def _mst_weight(graph: nx.Graph) -> float:
-    return float(sum(d["weight"] for _, _, d in nx.minimum_spanning_edges(graph, data=True)))
+def _mst_weight(graph: GraphT) -> float:
+    mst_edges = cast(
+        list[tuple[NodeId, NodeId, dict[str, Any]]],
+        list(nx.minimum_spanning_edges(graph, data=True)),  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    )
+    total = 0.0
+    for _, _, data in mst_edges:
+        total += float(data.get("weight", 0.0))
+    return total
 
 
 def compute_metrics(
-    graph: nx.Graph,
-    spanner: nx.Graph,
+    graph: GraphT,
+    spanner: GraphT,
     k: int,
     exact_threshold: int = EXACT_THRESHOLD,
     n_samples: int = STRETCH_SAMPLES,
@@ -102,7 +160,8 @@ def compute_metrics(
     n = graph.number_of_nodes()
     alpha = 2 * k - 1
     rng = random.Random(rng_seed)
-    nodes = list(graph.nodes())
+    nodes: list[NodeId] = list(graph.nodes())
+    pairs: list[tuple[NodeId, NodeId]]
 
     sparseness = spanner.number_of_edges() / n if n > 0 else 0.0
     mst_w = _mst_weight(graph)
@@ -113,7 +172,7 @@ def compute_metrics(
         pairs = [(nodes[i], nodes[j]) for i in range(n) for j in range(i + 1, n)]
     else:
         sample_count = LARGE_GRAPH_SAMPLES if n > 500 else n_samples
-        pairs = [tuple(rng.sample(nodes, 2)) for _ in range(sample_count)]
+        pairs = [cast(tuple[NodeId, NodeId], tuple(rng.sample(nodes, 2))) for _ in range(sample_count)]
 
     max_stretch = 0.0
     violations = 0
@@ -144,7 +203,7 @@ def compute_metrics(
     }
 
 
-def run_bs(graph: nx.Graph, k: int, n_runs: int = BS_TRIALS) -> dict[str, float | int | bool]:
+def run_bs(graph: GraphT, k: int, n_runs: int = BS_TRIALS) -> dict[str, float | int | bool]:
     sp_list: list[float] = []
     li_list: list[float] = []
     st_list: list[float] = []
@@ -155,7 +214,7 @@ def run_bs(graph: nx.Graph, k: int, n_runs: int = BS_TRIALS) -> dict[str, float 
     for seed in range(n_runs):
         tracemalloc.start()
         t0 = time.perf_counter()
-        spanner = baswana_sen_spanner(graph, k=k, seed=seed)
+        spanner = BS_SPANNER(graph, k=k, seed=seed)
         t1 = time.perf_counter()
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
@@ -183,7 +242,7 @@ def run_bs(graph: nx.Graph, k: int, n_runs: int = BS_TRIALS) -> dict[str, float 
     }
 
 
-def run_greedy(graph: nx.Graph, k: int) -> dict[str, float | int | bool]:
+def run_greedy(graph: GraphT, k: int) -> dict[str, float | int | bool]:
     tracemalloc.start()
     t0 = time.perf_counter()
     spanner = greedy_spanner(graph, k)
@@ -208,7 +267,7 @@ def run_greedy(graph: nx.Graph, k: int) -> dict[str, float | int | bool]:
 def make_row(
     family: str,
     instance: str,
-    graph: nx.Graph | None,
+    graph: GraphT | None,
     k: int,
     algo: str,
     status: str,
@@ -249,13 +308,13 @@ def make_row(
     return row
 
 
-def build_tsplib_complete_graph(problem: Any) -> tuple[nx.Graph | None, bool]:
+def build_tsplib_complete_graph(problem: TsplibProblem) -> tuple[GraphT | None, bool]:
     """Build complete graph; returns (graph, has_zero_weight)."""
     nodes = list(problem.get_nodes())
     if len(nodes) < 2:
         return None, True
 
-    graph = nx.Graph()
+    graph: GraphT = cast(GraphT, nx.Graph())
     graph.add_nodes_from(nodes)
 
     for idx, u in enumerate(nodes):
@@ -268,7 +327,7 @@ def build_tsplib_complete_graph(problem: Any) -> tuple[nx.Graph | None, bool]:
     return graph, False
 
 
-def benchmark_tsplib(writer: csv.DictWriter) -> None:
+def benchmark_tsplib(writer: csv.DictWriter[str]) -> None:
     tsp_files = sorted(TSPLIB_DIR.glob("*.tsp"))
     total = len(tsp_files)
 
@@ -283,7 +342,7 @@ def benchmark_tsplib(writer: csv.DictWriter) -> None:
     ordered_files: list[tuple[int, Path]] = []
     for tsp_file in tsp_files:
         try:
-            problem = tsplib95.load(tsp_file)
+            problem = load_tsplib_problem(tsp_file)
             dimension = int(getattr(problem, "dimension", 0) or 0)
         except Exception:
             dimension = 0
@@ -291,13 +350,19 @@ def benchmark_tsplib(writer: csv.DictWriter) -> None:
 
     for index, (_dimension_hint, tsp_file) in enumerate(sorted(ordered_files, key=lambda item: item[0])):
         print(f"TSPLIB [{index + 1}/{total}] {tsp_file.stem}", flush=True)
-        problem = tsplib95.load(tsp_file)
+        problem = load_tsplib_problem(tsp_file)
         ptype = str(getattr(problem, "type", "")).upper()
         if ptype == "ATSP":
             atsp_excluded += 1
             continue
 
         dimension = int(getattr(problem, "dimension", 0) or 0)
+
+        # Build complete weighted graph to apply true zero-weight exclusion.
+        graph, has_zero = build_tsplib_complete_graph(problem)
+        if has_zero or graph is None:
+            zero_excluded += 1
+            continue
 
         if dimension > materialize_cap:
             skipped_oversized += 1
@@ -329,12 +394,6 @@ def benchmark_tsplib(writer: csv.DictWriter) -> None:
                         m_override=complete_m,
                     )
                 )
-            continue
-
-        # Build complete weighted graph to apply true zero-weight exclusion.
-        graph, has_zero = build_tsplib_complete_graph(problem)
-        if has_zero or graph is None:
-            zero_excluded += 1
             continue
 
         survivors += 1
@@ -391,16 +450,55 @@ def benchmark_tsplib(writer: csv.DictWriter) -> None:
 
 
 def benchmark_sparse_graph(
-    writer: csv.DictWriter,
+    writer: csv.DictWriter[str],
     family: str,
     instance: str,
-    graph: nx.Graph,
+    graph: GraphT,
+    include_greedy: bool = False,
 ) -> None:
     print(f"{family}: n={graph.number_of_nodes()}, m={graph.number_of_edges()}")
     for k in K_VALUES:
         bs_metrics = run_bs(graph, k, n_runs=BS_TRIALS)
         writer.writerow(make_row(family, instance, graph, k, "BS", "ok", bs_metrics))
+        if include_greedy:
+            if graph.number_of_nodes() <= GREEDY_N_CAP:
+                gr_metrics = run_greedy(graph, k)
+                writer.writerow(make_row(family, instance, graph, k, "Greedy", "ok", gr_metrics))
+            else:
+                writer.writerow(
+                    make_row(
+                        family,
+                        instance,
+                        graph,
+                        k,
+                        "Greedy",
+                        f"skipped_greedy_n_gt_{GREEDY_N_CAP}",
+                        None,
+                    )
+                )
 
+
+def benchmark_sparse_family(
+    writer: csv.DictWriter[str],
+    family: str,
+    instances: list[tuple[str, GraphT]],
+    include_greedy: bool = False,
+) -> None:
+    total = len(instances)
+    print(f"{family} graphs loaded: {total}", flush=True)
+
+    for idx, (instance, graph) in enumerate(instances, start=1):
+        print(
+            f"{family} [{idx}/{total}] {instance} n={graph.number_of_nodes()} m={graph.number_of_edges()}",
+            flush=True,
+        )
+        benchmark_sparse_graph(
+            writer,
+            family,
+            instance,
+            graph,
+            include_greedy=include_greedy,
+        )
 
 def print_summary(csv_path: Path) -> None:
     df = pd.read_csv(csv_path)
@@ -420,25 +518,47 @@ def print_summary(csv_path: Path) -> None:
 
     print("\nSummary grouped by family/algo/k")
     print(summary.to_string(index=False))
+    
 
 
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     with OUTPUT_CSV.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
+        writer: csv.DictWriter[str] = csv.DictWriter(handle, fieldnames=FIELDNAMES)
         writer.writeheader()
 
         benchmark_tsplib(writer)
 
-        fb_graph = load_facebook_graph(FACEBOOK_PATH)
-        benchmark_sparse_graph(writer, "Facebook", "facebook_combined", fb_graph)
+        fb_graph = LOAD_FACEBOOK_GRAPH(FACEBOOK_PATH)
+        benchmark_sparse_family(
+            writer,
+            "Facebook",
+            [("facebook_combined", fb_graph)],
+            include_greedy=False,
+        )
 
-        gn_graph = load_gnutella_graph(GNUTELLA_PATH)
-        benchmark_sparse_graph(writer, "Gnutella", "p2p-Gnutella08", gn_graph)
+        gn_graph = LOAD_GNUTELLA_GRAPH(GNUTELLA_PATH)
+        benchmark_sparse_family(
+            writer,
+            "Gnutella",
+            [("p2p-Gnutella08", gn_graph)],
+            include_greedy=False,
+        )
+
+        steinlib_graphs = LOAD_STEINLIB_GRAPHS(STEINLIB_DIR)
+        benchmark_sparse_family(
+            writer,
+            "Steinlib",
+            sorted(steinlib_graphs.items()),
+            include_greedy=True,
+        )
+        
 
     print(f"\nWrote results to: {OUTPUT_CSV}")
     print_summary(OUTPUT_CSV)
+
+    
 
 
 if __name__ == "__main__":
