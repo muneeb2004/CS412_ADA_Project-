@@ -1,7 +1,5 @@
-"""
-Greedy (2k-1)-Spanner — implementation and benchmark.
-Matches the experimental setup of Chimani & Stutzenstein (ESA 2022).
-"""
+# Greedy (2k-1)-spanner implementation and benchmark.
+# Experimental setup follows Chimani & Stutzenstein (ESA 2022).
 
 # pyright: reportMissingTypeArgument=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnknownVariableType=false
 
@@ -61,11 +59,7 @@ MetricField = Literal[
 
 
 def greedy_spanner(G: nx.Graph, k: int) -> nx.Graph:
-    """
-    Build a greedy (2k-1)-spanner of G.
-
-    Sorts edges by weight and adds (u, v, w) only if d_H(u, v) > (2k-1)*w.
-    """
+    """Build a greedy (2k-1)-spanner of G."""
     alpha = 2 * k - 1
     H = nx.Graph()
     H.add_nodes_from(G.nodes())
@@ -78,7 +72,6 @@ def greedy_spanner(G: nx.Graph, k: int) -> nx.Graph:
         if d > alpha * w:
             H.add_edge(u, v, weight=w)
     return H
-
 
 
 def sparseness(G: nx.Graph, H: nx.Graph) -> float:
@@ -127,7 +120,6 @@ def effective_stretch(
     return max_stretch
 
 
-
 def make_random_graph(n: int, density: float, seed: int) -> nx.Graph:
     """Generate a connected random weighted graph with integer weights in [1, n]."""
     rng = random.Random(seed)
@@ -148,8 +140,7 @@ def make_random_graph(n: int, density: float, seed: int) -> nx.Graph:
     return G
 
 
-
-# Subset of paper's setup (8 sizes × 3 densities × 3 graphs = 72 instances)
+# paper's setup: 5 sizes × 3 densities × 3 reps
 SIZES = [10, 20, 50, 100, 200]
 DENSITIES = [0.1, 0.3, 0.5]
 REPS = 3
@@ -172,12 +163,10 @@ RESULT_FIELDNAMES = [
     "peak_mem_kb",
 ]
 
-# Store ER benchmark outputs in a dedicated folder.
 fig_dir = os.path.join(os.getcwd(), "ER_graphs")
 os.makedirs(fig_dir, exist_ok=True)
 csv_path = os.path.join(fig_dir, "results.csv")
 
-# Collect one result dictionary per run.
 results: list[ResultRow] = []
 
 if os.path.exists(csv_path):
@@ -294,13 +283,12 @@ print(f"Results saved to {csv_path}")
 
 
 agg: collections.defaultdict[tuple[str, int, float, int], list[ResultRow]] = collections.defaultdict(list)
-# Insert each raw row into its condition bucket.
 for r in results:
     key = (r["algo"], r["n"], r["density"], r["k"])
     agg[key].append(r)
 
 def mean_field(rows: list[ResultRow], field: MetricField) -> float:
-    """Return the mean of field across rows, rounded to 4 dp."""
+    """Mean of `field` across rows."""
     return round(float(np.mean([float(r[field]) for r in rows])), 4)
 
 agg_rows: list[AggRow] = []
@@ -327,7 +315,7 @@ for r in agg_rows:
 
 plt_any: Any = plt
 
-# 1. Sparseness vs n: one panel for k=2 and one for k=3.
+# sparseness vs n
 fig, axes = plt_any.subplots(1, 2, figsize=(10, 4), sharey=False)
 colors = {0.1: "#2166ac", 0.3: "#f4a582", 0.5: "#d6604d"}
 markers = {0.1: "o", 0.3: "s", 0.5: "^"}
@@ -355,7 +343,7 @@ plt_any.savefig(f"{fig_dir}/fig1_sparseness.pdf", bbox_inches="tight")
 plt_any.savefig(f"{fig_dir}/fig1_sparseness.png", dpi=150, bbox_inches="tight")
 plt_any.close()
 
-# 2. Runtime vs n (k=2)
+# runtime vs n (k=2)
 fig, ax = plt_any.subplots(figsize=(5.5, 4))
 for d in DENSITIES:
     rows = [
@@ -378,7 +366,7 @@ plt_any.savefig(f"{fig_dir}/fig2_runtime.pdf", bbox_inches="tight")
 plt_any.savefig(f"{fig_dir}/fig2_runtime.png", dpi=150, bbox_inches="tight")
 plt_any.close()
 
-# 3. Effective stretch vs n (density=0.3)
+# effective stretch vs n
 fig, ax = plt_any.subplots(figsize=(5.5, 4))
 for k in [2, 3]:
     rows = [

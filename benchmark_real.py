@@ -1,6 +1,6 @@
-"""Real-dataset benchmark runner for BS and Greedy spanners.
+"""Benchmark runner for BS and Greedy spanners on real datasets.
 
-This script benchmarks:
+Benchmarks:
 - TSPLIB: BS (multiple seeds) and Greedy (n <= GREEDY_N_CAP), k in {2, 3}
 - Facebook: BS only, k in {2, 3}
 - Gnutella: BS only, k in {2, 3}
@@ -26,7 +26,7 @@ import pandas as pd
 import tsplib95  # pyright: ignore[reportMissingTypeStubs]
 import dataset_loaders
 
-from bs_spanner import baswana_sen_spanner  # pyright: ignore[reportUnknownVariableType]
+from final_spanner import baswana_sen_spanner  # pyright: ignore[reportUnknownVariableType]
 
 
 NodeId = int
@@ -41,7 +41,6 @@ class TsplibProblem(Protocol):
     dimension: int
 
     def get_nodes(self) -> list[NodeId]: ...
-
     def get_weight(self, start: NodeId, end: NodeId) -> float | int: ...
 
 
@@ -195,7 +194,7 @@ def safe_load_tsplib_problem(path: Path) -> TsplibProblem | None:
 
 
 def preflight_checks() -> None:
-    """Validate dataset paths/types and output writability before long runs."""
+    # Validate dataset paths/types and output writability before long runs.
     required_paths: list[tuple[Path, str]] = [
         (TSPLIB_DIR, "dir"),
         (FACEBOOK_PATH, "file"),
@@ -276,7 +275,7 @@ def preflight_checks() -> None:
 
 
 def greedy_spanner(graph: GraphT, k: int) -> GraphT:
-    """Construct a weighted greedy (2k-1)-spanner."""
+    """Build a greedy (2k-1)-spanner."""
     alpha = 2 * k - 1
     spanner: GraphT = cast(GraphT, nx.Graph())
     spanner.add_nodes_from(graph.nodes())
@@ -765,7 +764,6 @@ def main() -> None:
     run_started = time.perf_counter()
     preflight_checks()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
     handle, writer, completed, resume_mode = open_results_writer(OUTPUT_CSV)
     try:
         if resume_mode:
@@ -775,12 +773,9 @@ def main() -> None:
             )
         else:
             print(f"Starting new benchmark file: {OUTPUT_CSV}", flush=True)
-
         def emit_row(row: dict[str, Any]) -> None:
             emit_row_with_checkpoint(writer, handle, completed, row)
-
         benchmark_tsplib(emit_row, completed)
-
         fb_graph = LOAD_FACEBOOK_GRAPH(FACEBOOK_PATH)
         benchmark_sparse_family(
             emit_row,
@@ -789,7 +784,6 @@ def main() -> None:
             [("facebook_combined", fb_graph)],
             include_greedy=False,
         )
-
         gn_graph = LOAD_GNUTELLA_GRAPH(GNUTELLA_PATH)
         benchmark_sparse_family(
             emit_row,
@@ -798,7 +792,6 @@ def main() -> None:
             [("p2p-Gnutella08", gn_graph)],
             include_greedy=False,
         )
-
         steinlib_graphs = LOAD_STEINLIB_GRAPHS(STEINLIB_DIR)
         benchmark_sparse_family(
             emit_row,
@@ -809,15 +802,10 @@ def main() -> None:
         )
     finally:
         handle.close()
-        
-
     print(f"\nWrote results to: {OUTPUT_CSV}")
     print_summary(OUTPUT_CSV)
     elapsed = time.perf_counter() - run_started
     print(f"Elapsed wall time: {format_elapsed(elapsed)} ({elapsed:.2f} s)")
-
-    
-
 
 if __name__ == "__main__":
     main()
