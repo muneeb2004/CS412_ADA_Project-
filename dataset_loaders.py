@@ -117,7 +117,7 @@ def load_gnutella_graph(path: str | Path, seed: int = 42) -> GraphT:
     Edge weights: random integers in [1, n], fixed seed.
     """
     directed = cast(
-        nx.DiGraph,
+        "nx.DiGraph[NodeId]",
         nx.read_edgelist(  # pyright: ignore[reportUnknownMemberType]
             str(path),
             nodetype=int,
@@ -126,9 +126,9 @@ def load_gnutella_graph(path: str | Path, seed: int = 42) -> GraphT:
             comments="#",
         ),
     )
-    undirected = directed.to_undirected()
-    largest_cc = max(nx.connected_components(undirected), key=len)
-    graph = undirected.subgraph(largest_cc).copy()
+    undirected: GraphT = directed.to_undirected()
+    largest_cc: set[NodeId] = max(nx.connected_components(undirected), key=len)  # pyright: ignore[reportUnknownArgumentType]
+    graph: GraphT = undirected.subgraph(largest_cc).copy()
     _assign_random_integer_weights(graph, seed=seed)
     return graph
 
