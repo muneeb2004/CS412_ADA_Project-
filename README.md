@@ -59,7 +59,7 @@ gnutella = load_gnutella_graph("p2p-Gnutella08.txt.gz", seed=42)
 From the repository root:
 
 ```bash
-python greedy_spanner.py
+python er_spanner.py
 ```
 
 ### What the Script Produces
@@ -70,7 +70,7 @@ After completion, the script writes outputs in the current working directory:
 - `fig3_stretch.pdf`, `fig3_stretch.png`
 
 ### Key Experiment Parameters (in code)
-Inside [greedy_spanner.py](greedy_spanner.py):
+Inside [er_spanner.py](er_spanner.py):
 - `SIZES`: graph sizes $n$
 - `DENSITIES`: Erdos-Renyi edge probability values
 - `REPS`: number of repetitions per setting
@@ -114,7 +114,7 @@ You can modify these constants to run larger or smaller experiments.
 
 Top-level repository overview:
 
-- [greedy_spanner.py](greedy_spanner.py): main implementation and benchmark pipeline.
+- [er_spanner.py](er_spanner.py): main synthetic/random (ER) benchmark pipeline.
 - [README.md](README.md): repository documentation.
 - `results.csv`: latest raw benchmark output.
 - `fig1_sparseness.pdf` / `fig1_sparseness.png`: sparseness plots.

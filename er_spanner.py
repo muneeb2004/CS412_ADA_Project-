@@ -29,6 +29,7 @@ from typing import Any, Literal, TypedDict, cast
 
 import networkx as nx
 import numpy as np
+from final_spanner import baswana_sen_spanner
 import matplotlib
 # Use a non-interactive backend so plots can be saved to files in scripts/servers.
 matplotlib.use("Agg")
@@ -38,6 +39,8 @@ import matplotlib.pyplot as plt
 class ResultRow(TypedDict):
     """Schema for one raw experiment result row (one graph instance, one k value)."""
 
+    # Spanner algorithm used for this row.
+    algo: str
     # Number of nodes in the original graph.
     n: int
     # Number of edges in the original graph.
@@ -67,6 +70,8 @@ class ResultRow(TypedDict):
 class AggRow(TypedDict):
     """Schema for aggregated statistics (mean values across repetitions)."""
 
+    # Spanner algorithm represented by this aggregate row.
+    algo: str
     # Number of nodes.
     n: int
     # Erdos-Renyi density.
@@ -382,17 +387,85 @@ DENSITIES = [0.1, 0.3, 0.5]
 REPS      = 3
 # Spanner k values; alpha bound will be 2k-1.
 K_VALUES  = [2, 3]
+# Algorithms benchmarked on the same ER graph instances.
+ALGORITHMS = ["Greedy", "BS"]
+
+# Stable CSV column order for reading/writing benchmark rows.
+RESULT_FIELDNAMES = [
+    "algo",
+    "n",
+    "m",
+    "density",
+    "rep",
+    "k",
+    "alpha",
+    "n_spanner_edges",
+    "sparseness",
+    "lightness",
+    "eff_stretch",
+    "runtime_s",
+    "peak_mem_kb",
+]
+
+# Store ER benchmark outputs in a dedicated folder.
+fig_dir = os.path.join(os.getcwd(), "ER_graphs")
+os.makedirs(fig_dir, exist_ok=True)
+csv_path = os.path.join(fig_dir, "results.csv")
 
 # Collect one result dictionary per run.
 results: list[ResultRow] = []
 
-# Total number of benchmark runs = all parameter combinations.
-total = len(SIZES) * len(DENSITIES) * REPS * len(K_VALUES)
+# Load any existing CSV so runs can resume from where they left off.
+if os.path.exists(csv_path):
+    with open(csv_path, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        for raw in reader:
+            # Backward compatibility: older CSVs may not contain the algo column.
+            algo_raw = (raw.get("algo") or "Greedy").strip() or "Greedy"
+            row: ResultRow = {
+                "algo": algo_raw,
+                "n": int(raw["n"]),
+                "m": int(raw["m"]),
+                "density": float(raw["density"]),
+                "rep": int(raw["rep"]),
+                "k": int(raw["k"]),
+                "alpha": int(raw["alpha"]),
+                "n_spanner_edges": int(raw["n_spanner_edges"]),
+                "sparseness": float(raw["sparseness"]),
+                "lightness": float(raw["lightness"]),
+                "eff_stretch": float(raw["eff_stretch"]),
+                "runtime_s": float(raw["runtime_s"]),
+                "peak_mem_kb": float(raw["peak_mem_kb"]),
+            }
+            results.append(row)
+    print(f"Loaded {len(results)} existing rows from {csv_path}")
+
+# Track completed runs so we can skip them and only execute pending ones.
+existing_run_keys = {
+    (r["algo"], r["n"], r["density"], r["rep"], r["k"]) for r in results
+}
+
+# Compute how many runs are still missing.
+pending_run_keys = [
+    (algo, n, density, rep, k)
+    for n in SIZES
+    for density in DENSITIES
+    for rep in range(REPS)
+    for k in K_VALUES
+    for algo in ALGORITHMS
+    if (algo, n, density, rep, k) not in existing_run_keys
+]
+
+# Total number of benchmark runs still pending.
+total = len(pending_run_keys)
 # Progress counter.
 done  = 0
 
 # Inform user that full benchmark sweep has started.
-print(f"Running {total} experiments...")
+if total == 0:
+    print("No pending experiments. Reusing existing CSV rows.")
+else:
+    print(f"Running {total} pending experiments...")
 
 # Outer loop over graph sizes.
 for n in SIZES:
@@ -400,6 +473,14 @@ for n in SIZES:
     for density in DENSITIES:
         # Repeat each configuration with different seeds for robustness.
         for rep in range(REPS):
+            # Skip graph generation when this repetition is already fully complete.
+            if not any(
+                (algo, n, density, rep, k) not in existing_run_keys
+                for k in K_VALUES
+                for algo in ALGORITHMS
+            ):
+                continue
+
             # Deterministic seed composition for reproducible runs.
             seed = n * 1000 + int(density * 10) * 10 + rep
             # Generate one connected random weighted graph instance.
@@ -407,91 +488,73 @@ for n in SIZES:
 
             # For the same graph instance, build/evaluate each spanner parameter k.
             for k in K_VALUES:
-                # Start memory tracking only around the construction step.
-                # tracemalloc measures Python-level allocations and peak memory.
-                tracemalloc.start()
-                # High-resolution start time for runtime measurement.
-                t0 = time.perf_counter()
-                # Build greedy spanner for this graph and k.
-                H  = greedy_spanner(G, k)
-                # End time immediately after construction.
-                t1 = time.perf_counter()
-                # Read current and peak traced memory; keep peak for reporting.
-                _, peak_mem = tracemalloc.get_traced_memory()
-                # Stop tracing to avoid overhead accumulation across iterations.
-                tracemalloc.stop()
+                for algo in ALGORITHMS:
+                    run_key = (algo, n, density, rep, k)
+                    if run_key in existing_run_keys:
+                        continue
 
-                # Compute structural sparsity metric.
-                sp  = sparseness(G, H)
-                # Compute weight efficiency metric relative to MST.
-                li  = lightness(G, H)
-                # Compute observed distance distortion metric.
-                es  = effective_stretch(G, H)
-                # Runtime in seconds for constructing H.
-                rt  = t1 - t0
-                # Convert bytes to kilobytes for easier reading.
-                pm  = peak_mem / 1024  # KB
+                    # Start memory tracking only around the construction step.
+                    # tracemalloc measures Python-level allocations and peak memory.
+                    tracemalloc.start()
+                    # High-resolution start time for runtime measurement.
+                    t0 = time.perf_counter()
+                    if algo == "Greedy":
+                        h_spanner = greedy_spanner(G, k)
+                    else:
+                        # Baswana-Sen is randomized; use deterministic seed per run.
+                        h_spanner = baswana_sen_spanner(G, k, seed=seed)
+                    # End time immediately after construction.
+                    t1 = time.perf_counter()
+                    # Read current and peak traced memory; keep peak for reporting.
+                    _, peak_mem = tracemalloc.get_traced_memory()
+                    # Stop tracing to avoid overhead accumulation across iterations.
+                    tracemalloc.stop()
 
-                # Store full raw result row for later CSV export and aggregation.
-                results.append({
-                    "n":        n,
-                    "m":        G.number_of_edges(),
-                    "density":  density,
-                    "rep":      rep,
-                    "k":        k,
-                    "alpha":    2*k - 1,
-                    "n_spanner_edges": H.number_of_edges(),
-                    "sparseness":  round(sp,  4),
-                    "lightness":   round(li,  4),
-                    "eff_stretch": round(es,  4),
-                    "runtime_s":   round(rt,  4),
-                    "peak_mem_kb": round(pm,  2),
-                })
+                    # Compute structural sparsity metric.
+                    sp  = sparseness(G, h_spanner)
+                    # Compute weight efficiency metric relative to MST.
+                    li  = lightness(G, h_spanner)
+                    # Compute observed distance distortion metric.
+                    es  = effective_stretch(G, h_spanner)
+                    # Runtime in seconds for constructing H.
+                    rt  = t1 - t0
+                    # Convert bytes to kilobytes for easier reading.
+                    pm  = peak_mem / 1024  # KB
 
-                # Update progress counter after each completed (graph, k) run.
-                done += 1
-                # Print periodic progress updates to keep long runs transparent.
-                if done % 20 == 0:
-                    print(f"  {done}/{total} done")
+                    # Store full raw result row for later CSV export and aggregation.
+                    results.append({
+                        "algo":     algo,
+                        "n":        n,
+                        "m":        G.number_of_edges(),
+                        "density":  density,
+                        "rep":      rep,
+                        "k":        k,
+                        "alpha":    2*k - 1,
+                        "n_spanner_edges": h_spanner.number_of_edges(),
+                        "sparseness":  round(sp,  4),
+                        "lightness":   round(li,  4),
+                        "eff_stretch": round(es,  4),
+                        "runtime_s":   round(rt,  4),
+                        "peak_mem_kb": round(pm,  2),
+                    })
+
+                    # Mark this run as complete so duplicates are avoided.
+                    existing_run_keys.add(run_key)
+
+                    # Update progress counter after each completed run.
+                    done += 1
+                    # Print periodic progress updates to keep long runs transparent.
+                    if done % 20 == 0:
+                        print(f"  {done}/{total} done")
 
 # All benchmark runs finished.
-print(f"All {total} experiments complete.")
-
-# ── Save CSV ──────────────────────────────────────────────────────────────────
-
-def resolve_output_dir() -> str:
-    """
-    Resolve output directory where CSV and plots are written.
-
-    Purpose:
-    Keep all generated artifacts in the current working directory so they appear
-    directly in the project folder from which the script is run.
-
-    Parameters:
-    None.
-
-    Return value:
-    str:
-        Path to directory used for output files.
-
-    High-level idea:
-    Use os.getcwd() as a simple, predictable output target.
-    """
-    # Save outputs in the current working directory.
-    return os.getcwd()
-
-
-# Resolve output folder once and reuse for all files.
-fig_dir = resolve_output_dir()
-# Build CSV file path in that output directory.
-csv_path = os.path.join(fig_dir, "results.csv")
+print(f"Completed {done} new experiments.")
+print(f"Total rows available for analysis: {len(results)}")
 
 # Write all raw result rows to CSV.
 with open(csv_path, "w", newline="") as f:
-    # Use keys from first result row as stable CSV header order.
-    fieldnames: list[str] = list(results[0].keys())
     # DictWriter maps each dictionary row to CSV columns by header names.
-    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    writer = csv.DictWriter(f, fieldnames=RESULT_FIELDNAMES)
     # Emit header row first.
     writer.writeheader()
     # Emit all benchmark rows.
@@ -506,11 +569,11 @@ import collections
 
 # Mean per (n, density, k) across reps
 # Group rows by experimental condition so repetitions can be averaged.
-agg: collections.defaultdict[tuple[int, float, int], list[ResultRow]] = collections.defaultdict(list)
+agg: collections.defaultdict[tuple[str, int, float, int], list[ResultRow]] = collections.defaultdict(list)
 # Insert each raw row into its condition bucket.
 for r in results:
     # Grouping key identifies one condition independent of repetition.
-    key = (r["n"], r["density"], r["k"])
+    key = (r["algo"], r["n"], r["density"], r["k"])
     agg[key].append(r)
 
 def mean_field(rows: list[ResultRow], field: MetricField) -> float:
@@ -539,9 +602,10 @@ def mean_field(rows: list[ResultRow], field: MetricField) -> float:
 # Final list of aggregated rows (one per unique condition).
 agg_rows: list[AggRow] = []
 # Sort keys for deterministic output ordering in table/plots.
-for (n, d, k), rows in sorted(agg.items()):
+for (algo, n, d, k), rows in sorted(agg.items()):
     # Build one summarized row with means across repetitions.
     agg_rows.append({
+        "algo": algo,
         "n": n, "density": d, "k": k, "alpha": 2*k-1,
         "sparseness":  mean_field(rows, "sparseness"),
         "lightness":   mean_field(rows, "lightness"),
@@ -552,13 +616,13 @@ for (n, d, k), rows in sorted(agg.items()):
 
 # Print summary table
 # Print table header with aligned fixed-width columns.
-print(f"\n{'n':>6} {'dens':>5} {'k':>2} {'alpha':>5} {'sparse':>8} "
+print(f"\n{'algo':>8} {'n':>6} {'dens':>5} {'k':>2} {'alpha':>5} {'sparse':>8} "
       f"{'light':>7} {'stretch':>8} {'time(s)':>9} {'mem(KB)':>9}")
 # Visual separator line.
-print("-" * 70)
+print("-" * 80)
 # Print one formatted line per aggregated condition.
 for r in agg_rows:
-    print(f"{r['n']:>6} {r['density']:>5.1f} {r['k']:>2} {r['alpha']:>5} "
+    print(f"{r['algo']:>8} {r['n']:>6} {r['density']:>5.1f} {r['k']:>2} {r['alpha']:>5} "
           f"{r['sparseness']:>8.4f} {r['lightness']:>7.4f} "
           f"{r['eff_stretch']:>8.4f} {r['runtime_s']:>9.4f} "
           f"{r['peak_mem_kb']:>9.2f}")
@@ -583,7 +647,10 @@ for ax_idx, k in enumerate([2, 3]):
     # Draw one line per density on the current axis.
     for d in DENSITIES:
         # Filter aggregated rows for this (k, density) slice.
-        rows = [r for r in agg_rows if r["k"] == k and r["density"] == d]
+        rows = [
+            r for r in agg_rows
+            if r["algo"] == "Greedy" and r["k"] == k and r["density"] == d
+        ]
         # X values: node sizes n.
         ns   = [r["n"] for r in rows]
         # Y values: average sparseness.
@@ -619,7 +686,10 @@ fig, ax = plt_any.subplots(figsize=(5.5, 4))
 # Plot runtime lines for each density at fixed k=2.
 for d in DENSITIES:
     # Select rows for this density and k=2.
-    rows = [r for r in agg_rows if r["k"] == 2 and r["density"] == d]
+    rows = [
+        r for r in agg_rows
+        if r["algo"] == "Greedy" and r["k"] == 2 and r["density"] == d
+    ]
     # X values: graph size.
     ns   = [r["n"] for r in rows]
     # Y values: average runtime seconds.
@@ -649,7 +719,10 @@ fig, ax = plt_any.subplots(figsize=(5.5, 4))
 # Compare k=2 and k=3 at fixed density=0.3.
 for k in [2, 3]:
     # Select rows for this k at chosen density.
-    rows = [r for r in agg_rows if r["k"] == k and r["density"] == 0.3]
+    rows = [
+        r for r in agg_rows
+        if r["algo"] == "Greedy" and r["k"] == k and r["density"] == 0.3
+    ]
     # X values: graph size.
     ns   = [r["n"] for r in rows]
     # Y values: observed effective stretch.

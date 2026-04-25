@@ -117,7 +117,7 @@ def load_gnutella_graph(path: str | Path, seed: int = 42) -> GraphT:
     Edge weights: random integers in [1, n], fixed seed.
     """
     directed = cast(
-        nx.DiGraph[NodeId],
+        nx.DiGraph,
         nx.read_edgelist(  # pyright: ignore[reportUnknownMemberType]
             str(path),
             nodetype=int,
